@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Love Heart</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      background-color: #030102;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    canvas {
+      display: block;
+      width: min(96vw, calc(96vh * (1100 / 760)));
+      height: auto;
+      aspect-ratio: 1100 / 760;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="heartCanvas" title="Klik untuk ulang animasi"></canvas>
+
+  <script>
+    const canvas = document.getElementById("heartCanvas");
+    const ctx = canvas.getContext("2d");
+
+    const PHRASES = [
+      "I love you", "Je t'aime", "Te amo", "Ich liebe dich", "Ti amo",
+      "Eu te amo", "Ik hou van jou", "Jag älskar dig", "Kocham cię",
+      "Σ' αγαπώ", "Seni seviyorum", "Aku cinta kamu", "Anh yêu em",
+      "愛してる", "我爱你", "사랑해", "Я тебя люблю",
+      "मैं तुमसे प्यार करता हूँ", "ฉันรักเธอ"
+    ];
+
+    const COLORS = [
+      [255, 42, 77],
+      [255, 82, 114],
+      [235, 28, 66],
+      [255, 112, 136],
+      [255, 56, 92]
+    ];
+
+    const W = 1100;
+    const H = 760;
+    const S = 22;
+    const ROW_H = 29;
+    const PAD = 13;
+    const GAP_MIN = 12;
+
+    // Tetapan masa animasi (ms)
+    const EDGE_TRACE_MS = 3600;   // Masa garisan luar siap melukis hati
+    const BLOOM_START_MS = 3100;  // Bahagian tengah mula mekar sebelum garisan luar habis
+    const BLOOM_SPAN_MS = 2800;   // Tempoh gelombang mekar dari tengah ke tepi
+    const ITEM_ANIM_MS = 780;     // Kelancaran setiap perkataan muncul
+    const HOLD_MS = 2800;         // Tempoh hati penuh bersinar & shimmer
+    const FADE_OUT_MS = 950;      // Pudar keluar sebelum pusingan baru
+    const RISE_PX = 14;
+
+    const FONT_SPEC = '600 17px "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, Roboto, sans-serif';
+
+    function setupCanvas() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.font = FONT_SPEC;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+    }
+
+    function rawHeart(t) {
+      const x = 16 * Math.pow(Math.sin(t), 3);
+      const y =
+        13 * Math.cos(t) -
+        5 * Math.cos(2 * t) -
+        2 * Math.cos(3 * t) -
+        Math.cos(4 * t);
+      return [x, y];
+    }
+
+    const pts = [];
+    for (let i = 0; i < 3000; i++) {
+      pts.push(rawHeart((2 * Math.PI * i) / 3000));
+    }
+
+    const ymaxU = Math.max(...pts.map((p) => p[1]));
+    const yminU = Math.min(...pts.map((p) => p[1]));
+    const CX = W / 2;
+    const CY = (H - (ymaxU - yminU) * S) / 2 + ymaxU * S;
+    const dense = pts.map(([x, y]) => [CX + x * S, CY - y * S]);
+    const topY = CY - ymaxU * S;
+    const bottomY = CY - yminU * S;
+
+    function intervalsAt(y) {
+      const xs = [];
+      const n = dense.length;
+      for (let i = 0; i < n; i++) {
+        const [x1, y1] = dense[i];
+        const [x2, y2] = dense[(i + 1) % n];
+        if ((y1 <= y && y < y2) || (y2 <= y && y < y1)) {
+          if (y2 !== y1) {
+            xs.push(x1 + ((y - y1) * (x2 - x1)) / (y2 - y1));
+          }
+        }
+      }
+      xs.sort((a, b) => a - b);
+      const result = [];
+      for (let i = 0; i < xs.length - 1; i += 2) {
+        result.push([xs[i], xs[i + 1]]);
+      }
+      return result;
+    }
+
+    const widthCache = new Map();
+    function measureWidth(text) {
+      if (!widthCache.has(text)) {
+        ctx.font = FONT_SPEC;
+        widthCache.set(text, ctx.measureText(text).width);
+      }
+      return widthCache.get(text);
+    }
+
+    let pool = [];
+    function resetPool() {
+      pool = [...PHRASES];
+      for (let i = pool.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [pool[i], pool[j]] = [pool[j], pool[i]];
+      }
+    }
+
+    function takePhrase(maxW) {
+      for (let i = 0; i < pool.length; i++) {
+        if (measureWidth(pool[i]) <= maxW) {
+          return pool.splice(i, 1)[0];
+        }
+      }
+      if (pool.length < PHRASES.length) {
+        resetPool();
+        for (let i = 0; i < pool.length; i++) {
+          if (measureWidth(pool[i]) <= maxW) {
+            return pool.splice(i, 1)[0];
+          }
+        }
+      }
+      return null;
+    }
+
+    function fillInterval(x0, x1, y) {
+      x0 += PAD;
+      x1 -= PAD;
+      const available = x1 - x0;
+      if (available < 70) return [];
+
+      const chosen = [];
+      const widths = [];
+      let total = 0;
+
+      while (true) {
+        const remaining = available - total - (chosen.length ? GAP_MIN : 0);
+        const phrase = takePhrase(remaining);
+        if (!phrase) break;
+        const w = measureWidth(phrase);
+        total += w + (chosen.length ? GAP_MIN : 0);
+        chosen.push(phrase);
+        widths.push(w);
+      }
+
+      if (!chosen.length) return [];
+
+      let cursor = x0 + (available - total) / 2;
+      const placed = [];
+      for (let i = 0; i < chosen.length; i++) {
+        placed.push({
+          phrase: chosen[i],
+          x: cursor + widths[i] / 2,
+          y
+        });
+        cursor += widths[i] + GAP_MIN;
+      }
+      return placed;
+    }
+
+    function makeLayout() {
+      resetPool();
+      const rawLayout = [];
+      let y = topY + 9;
+      let row = 0;
+
+      while (y < bottomY - 5) {
+        for (const [x0, x1] of intervalsAt(y)) {
+          for (const item of fillInterval(x0, x1, y)) {
+            rawLayout.push({
+              ...item,
+              row,
+              color: COLORS[Math.floor(Math.random() * COLORS.length)]
+            });
+          }
+        }
+        y += ROW_H;
+        row++;
+      }
+
+      const contour = [
+        [900, 128], [1020, 145], [1110, 230], [1135, 330],
+        [1080, 440], [940, 540], [780, 635], [640, 675],
+        [500, 635], [340, 540], [200, 440], [145, 330],
+        [170, 230], [260, 145], [380, 128]
+      ];
+
+      const cumulative = [0];
+      for (let i = 0; i < contour.length - 1; i++) {
+        const [ax, ay] = contour[i];
+        const [bx, by] = contour[i + 1];
+        cumulative.push(cumulative[i] + Math.hypot(bx - ax, by - ay));
+      }
+
+      function contourProgress(x, y) {
+        let bestDist = Infinity;
+        let bestProg = 0;
+        for (let i = 0; i < contour.length - 1; i++) {
+          const [ax, ay] = contour[i];
+          const [bx, by] = contour[i + 1];
+          const dx = bx - ax;
+          const dy = by - ay;
+          const lenSq = dx * dx + dy * dy || 1;
+          const u = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / lenSq));
+          const px = ax + u * dx;
+          const py = ay + u * dy;
+          const dist = Math.hypot(x - px, y - py);
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestProg = cumulative[i] + u * Math.sqrt(lenSq);
+          }
+        }
+        return bestProg;
+      }
+
+      const edge = [];
+      const interior = [];
+      const heartCoreY = CY - 25;
+
+      for (const item of rawLayout) {
+        if (item.row <= 3 || item.row >= 9) {
+          item.progress = contourProgress(item.x, item.y);
+          item.phase = 0;
+          edge.push(item);
+        } else {
+          // Jarak dari pusat hati untuk efek mekar (radial bloom)
+          item.radialDist = Math.hypot((item.x - CX) * 0.85, item.y - heartCoreY);
+          item.phase = 1;
+          interior.push(item);
+        }
+      }
+
+      // Susun garisan luar ikut laluan perimeter hati
+      edge.sort((a, b) => a.progress - b.progress);
+      edge.forEach((item, idx) => {
+        item.delay = 160 + (idx / Math.max(1, edge.length - 1)) * EDGE_TRACE_MS;
+      });
+
+      // Susun bahagian dalam dari tengah ke luar
+      interior.sort((a, b) => a.radialDist - b.radialDist);
+      const maxDist = interior.reduce((m, it) => Math.max(m, it.radialDist), 1);
+
+      interior.forEach((item) => {
+        const normDist = item.radialDist / maxDist;
+        // Lengkung lembut supaya pusat mekar pantas dan meluas ke tepi dengan anggun
+        const wave = Math.pow(normDist, 0.85);
+        const subtleOrganicOffset = (Math.random() - 0.5) * 90;
+        item.delay = BLOOM_START_MS + wave * BLOOM_SPAN_MS + subtleOrganicOffset;
+      });
+
+      return [...edge, ...interior];
+    }
+
+    // Zarah cahaya halus (ambient embers) di latar belakang
+    const embers = Array.from({ length: 34 }, () => ({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      r: 1.2 + Math.random() * 2.2,
+      speedY: 0.18 + Math.random() * 0.35,
+      driftPhase: Math.random() * Math.PI * 2,
+      alpha: 0.15 + Math.random() * 0.35
+    }));
+
+    function drawAmbientBackground(elapsed, revealEnd, holdEnd, globalAlpha) {
+      // Cahaya merah jambu lembut di belakang tengah hati
+      const bgReveal = Math.min(1, elapsed / (BLOOM_START_MS + 1500));
+      const bgAlpha = bgReveal * globalAlpha * 0.24;
+
+      if (bgAlpha > 0.005) {
+        const grad = ctx.createRadialGradient(CX, CY - 15, 20, CX, CY - 15, 430);
+        grad.addColorStop(0, `rgba(255, 38, 82, ${bgAlpha.toFixed(3)})`);
+        grad.addColorStop(0.55, `rgba(160, 12, 42, ${(bgAlpha * 0.45).toFixed(3)})`);
+        grad.addColorStop(1, "rgba(3, 1, 2, 0)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, W, H);
+      }
+
+      // Zarah cahaya terapung
+      for (const p of embers) {
+        p.y -= p.speedY;
+        p.driftPhase += 0.015;
+        if (p.y < -10) {
+          p.y = H + 10;
+          p.x = Math.random() * W;
+        }
+        const drawX = p.x + Math.sin(p.driftPhase) * 14;
+        const a = p.alpha * globalAlpha;
+        if (a <= 0.01) continue;
+
+        ctx.fillStyle = `rgba(255, 95, 130, ${a.toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(drawX, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // Fungsi spring lembut untuk animasi bahagian tengah
+    function elasticSpring(t) {
+      if (t <= 0) return 0;
+      if (t >= 1) return 1;
+      return 1 - Math.exp(-6.2 * t) * Math.cos(7.8 * t);
+    }
+
+    let items = [];
+    let cycleStart = 0;
+
+    function startCycle() {
+      widthCache.clear();
+      items = makeLayout();
+      cycleStart = performance.now();
+    }
+
+    function render(now) {
+      const elapsed = now - cycleStart;
+      const revealEnd = BLOOM_START_MS + BLOOM_SPAN_MS + ITEM_ANIM_MS;
+      const holdEnd = revealEnd + HOLD_MS;
+      const totalCycle = holdEnd + FADE_OUT_MS;
+
+      if (elapsed >= totalCycle) {
+        startCycle();
+        requestAnimationFrame(render);
+        return;
+      }
+
+      ctx.clearRect(0, 0, W, H);
+
+      let globalAlpha = 1;
+      if (elapsed > holdEnd) {
+        const outProgress = (elapsed - holdEnd) / FADE_OUT_MS;
+        globalAlpha = Math.max(0, 1 - outProgress * outProgress);
+      }
+
+      drawAmbientBackground(elapsed, revealEnd, holdEnd, globalAlpha);
+
+      // Denyutan lembut selepas hati penuh
+      let pulseScale = 1;
+      if (elapsed > revealEnd - 300 && elapsed <= holdEnd) {
+        const beatPhase = ((elapsed - (revealEnd - 300)) / 1150) * Math.PI * 2;
+        const beat = Math.pow(Math.max(0, Math.sin(beatPhase)), 4);
+        pulseScale = 1 + beat * 0.016;
+      }
+
+      ctx.save();
+      ctx.translate(CX, CY);
+      ctx.scale(pulseScale, pulseScale);
+      ctx.translate(-CX, -CY);
+
+      ctx.font = FONT_SPEC;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+
+      // Kedudukan gelombang kilauan (shimmer) semasa fasa hold
+      const shimmerPos = ((elapsed - revealEnd) / 1400) * 1400 - 200;
+
+      for (const item of items) {
+        const local = elapsed - item.delay;
+        if (local <= 0) continue;
+
+        const [r, g, b] = item.color;
+
+        if (item.phase === 1) {
+          // Bahagian Tengah: Elastic Spring Bloom + Soft Flare
+          const t = Math.min(1, local / ITEM_ANIM_MS);
+          const spring = elasticSpring(t);
+          const alpha = Math.min(1, t * 2.1) * globalAlpha;
+          if (alpha <= 0.005) continue;
+
+          const scale = 0.35 + 0.65 * spring;
+
+          // Kilauan lembut sewaktu mula muncul + shimmer sweep semasa penuh
+          let highlight = t < 0.65 ? (1 - t / 0.65) * 0.42 : 0;
+          if (elapsed > revealEnd - 200 && elapsed < holdEnd) {
+            const diag = item.x * 0.65 + item.y * 0.55;
+            const distToShimmer = Math.abs(diag - shimmerPos);
+            if (distToShimmer < 110) {
+              highlight += (1 - distToShimmer / 110) * 0.28;
+            }
+          }
+
+          const fr = Math.min(255, Math.round(r + (255 - r) * highlight));
+          const fg = Math.min(255, Math.round(g + (235 - g) * highlight));
+          const fb = Math.min(255, Math.round(b + (242 - b) * highlight));
+
+          ctx.save();
+          ctx.translate(item.x, item.y);
+          ctx.scale(scale, scale);
+          ctx.shadowColor = `rgba(${r}, ${g}, ${b}, ${(alpha * (0.5 + highlight)).toFixed(3)})`;
+          ctx.shadowBlur = 9 + highlight * 14;
+          ctx.fillStyle = `rgba(${fr}, ${fg}, ${fb}, ${alpha.toFixed(3)})`;
+          ctx.fillText(item.phrase, 0, 0);
+          ctx.restore();
+        } else {
+          // Bahagian Luar: Melukis perimeter hati dengan licin
+          const fade = Math.min(1, local / ITEM_ANIM_MS);
+          const eased = 1 - Math.pow(1 - fade, 3);
+          const alpha = eased * globalAlpha;
+          if (alpha <= 0.005) continue;
+
+          const y = item.y + RISE_PX * (1 - eased);
+          const entryGlow = fade < 0.6 ? (1 - fade / 0.6) * 0.35 : 0;
+          const fr = Math.min(255, Math.round(r + (255 - r) * entryGlow));
+          const fg = Math.min(255, Math.round(g + (220 - g) * entryGlow));
+          const fb = Math.min(255, Math.round(b + (230 - b) * entryGlow));
+
+          ctx.shadowColor = `rgba(${r}, ${g}, ${b}, ${(alpha * 0.55).toFixed(3)})`;
+          ctx.shadowBlur = 10 + entryGlow * 10;
+          ctx.fillStyle = `rgba(${fr}, ${fg}, ${fb}, ${alpha.toFixed(3)})`;
+          ctx.fillText(item.phrase, item.x, y);
+        }
+      }
+
+      ctx.restore();
+      requestAnimationFrame(render);
+    }
+
+    canvas.addEventListener("click", startCycle);
+    window.addEventListener("resize", setupCanvas);
+
+    setupCanvas();
+    (document.fonts ? document.fonts.ready : Promise.resolve()).then(() => {
+      startCycle();
+      requestAnimationFrame(render);
+    });
+  </script>
+</body>
+</html>
